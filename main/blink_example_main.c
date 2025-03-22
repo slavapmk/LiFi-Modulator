@@ -1,107 +1,118 @@
-/* Blink Example
-
-   This example code is in the Public Domain (or CC0 licensed, at your option.)
-
-   Unless required by applicable law or agreed to in writing, this
-   software is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
-   CONDITIONS OF ANY KIND, either express or implied.
-*/
-#include <stdio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/gpio.h"
-#include "esp_log.h"
-#include "led_strip.h"
-#include "sdkconfig.h"
+#include "driver/uart.h"
+#include "esp_system.h"
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <rom/gpio.h>
 
-static const char *TAG = "example";
+#define LED_GPIO         2         // Пин светодиода
+#define UART_PORT_NUM    UART_NUM_0  // UART, используемый для связи (USB)
+#define BUF_SIZE         1024      // Размер буфера для приёма данных
 
-/* Use project configuration menu (idf.py menuconfig) to choose the GPIO to blink,
-   or you can edit the following line and set a number here.
-*/
-#define BLINK_GPIO 2
+// Глобальная переменная для частоты (в Гц)
+volatile float frequency = 2.0;
 
-static uint8_t s_led_state = 0;
-
-#ifdef CONFIG_BLINK_LED_STRIP
-
-static led_strip_handle_t led_strip;
-
-static void blink_led(void)
-{
-    /* If the addressable LED is enabled */
-    if (s_led_state) {
-        /* Set the LED pixel using RGB from 0 (0%) to 255 (100%) for each color */
-        led_strip_set_pixel(led_strip, 0, 16, 16, 16);
-        /* Refresh the strip to send data */
-        led_strip_refresh(led_strip);
+// Функция для обработки специальных команд
+void process_command(const char *cmd) {
+    // Если команда начинается с "#FREQ"
+    if (strncmp(cmd, "#FREQ", 5) == 0) {
+        // Пропускаем "#FREQ" и пробельные символы
+        const char *arg = cmd + 5;
+        while (*arg == ' ' || *arg == '\t') {
+            arg++;
+        }
+        if (*arg) {
+            float new_freq = atof(arg);
+            if (new_freq > 0) {
+                frequency = new_freq;
+                printf("Частота изменена на %.2f Гц\n", frequency);
+                // Здесь можно отправить команду на устройство или выполнить дополнительную обработку
+            } else {
+                printf("Неверное значение частоты: %s\n", arg);
+            }
+        } else {
+            printf("Команда #FREQ требует аргумент, например: #FREQ 2\n");
+        }
     } else {
-        /* Set all LED off to clear all pixels */
-        led_strip_clear(led_strip);
+        printf("Неизвестная команда: %s\n", cmd);
     }
 }
 
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink addressable LED!");
-    /* LED strip initialization with the GPIO and pixels number*/
-    led_strip_config_t strip_config = {
-        .strip_gpio_num = BLINK_GPIO,
-        .max_leds = 1, // at least one LED on board
-    };
-#if CONFIG_BLINK_LED_STRIP_BACKEND_RMT
-    led_strip_rmt_config_t rmt_config = {
-        .resolution_hz = 10 * 1000 * 1000, // 10MHz
-        .flags.with_dma = false,
-    };
-    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
-#elif CONFIG_BLINK_LED_STRIP_BACKEND_SPI
-    led_strip_spi_config_t spi_config = {
-        .spi_bus = SPI2_HOST,
-        .flags.with_dma = true,
-    };
-    ESP_ERROR_CHECK(led_strip_new_spi_device(&strip_config, &spi_config, &led_strip));
-#else
-#error "unsupported LED strip backend"
-#endif
-    /* Set all LED off to clear all pixels */
-    led_strip_clear(led_strip);
-}
-
-#elif CONFIG_BLINK_LED_GPIO
-
-static void blink_led(void)
-{
-    /* Set the GPIO level according to the state (LOW or HIGH)*/
-    gpio_set_level(BLINK_GPIO, s_led_state);
-}
-
-static void configure_led(void)
-{
-    ESP_LOGI(TAG, "Example configured to blink GPIO LED!");
-    gpio_reset_pin(BLINK_GPIO);
-    /* Set the GPIO as a push/pull output */
-    gpio_set_direction(BLINK_GPIO, GPIO_MODE_OUTPUT);
-}
-
-#else
-#error "unsupported LED type"
-#endif
-
-
-#define delayMs(x) vTaskDelay(x / portTICK_PERIOD_MS);
-
 void app_main(void)
 {
+    // Инициализация пина для светодиода
+    gpio_pad_select_gpio(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_GPIO, 0);
 
-    /* Configure the peripheral according to the LED type */
-    configure_led();
+    // Настройка UART
+    const uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+    };
+    uart_param_config(UART_PORT_NUM, &uart_config);
+    uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
+
+    uint8_t data[BUF_SIZE];
 
     while (1) {
-        ESP_LOGI(TAG, "Turning the LED %s!", s_led_state == true ? "ON" : "OFF");
-        blink_led();
-        /* Toggle the LED state */
-        s_led_state = !s_led_state;
-        delayMs(100);
+        // Чтение данных с UART (блокирующее чтение с таймаутом)
+        int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE - 1, 20 / portTICK_PERIOD_MS);
+        if (len > 0) {
+            data[len] = '\0';  // завершаем строку нулевым символом
+
+            // Удаляем символы перевода строки и возврата каретки
+            char *pos;
+            if ((pos = strchr((char *)data, '\r')) != NULL) {
+                *pos = '\0';
+            }
+            if ((pos = strchr((char *)data, '\n')) != NULL) {
+                *pos = '\0';
+            }
+
+            // Если строка начинается с '#' — обрабатываем её как команду
+            if (data[0] == '#') {
+                process_command((char *)data);
+            }
+            else {
+                // Если строка содержит только '0' и '1', обрабатываем её как последовательность для мигания
+                int i = 0;
+                while (data[i] != '\0') {
+                    if (data[i] != '0' && data[i] != '1') {
+                        // Пропускаем некорректные символы
+                        i++;
+                        continue;
+                    }
+                    char current = data[i];
+                    int count = 1;
+                    // Группируем подряд идущие одинаковые символы
+                    while (data[i + 1] != '\0' && data[i + 1] == current) {
+                        count++;
+                        i++;
+                    }
+                    // Устанавливаем состояние светодиода
+                    if (current == '1') {
+                        gpio_set_level(LED_GPIO, 1);
+                    } else {
+                        gpio_set_level(LED_GPIO, 0);
+                    }
+                    // Рассчитываем длительность задержки в миллисекундах:
+                    // период = 1000 / frequency (мс)
+                    int delay_ms = (int)(1000.0 / frequency);
+                    for (int j = 0; j < count; j++) {
+                        vTaskDelay(delay_ms / portTICK_PERIOD_MS);
+                    }
+                    i++;
+                }
+                // По окончании последовательности выключаем светодиод
+                gpio_set_level(LED_GPIO, 0);
+            }
+        }
     }
 }
