@@ -2,30 +2,35 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_timer.h"
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <rom/ets_sys.h>
 #include <rom/gpio.h>
 
-#define LED_GPIO         2         // Пин для светодиода
-#define UART_PORT_NUM    UART_NUM_0  // UART для связи (обычно USB)
-#define BUF_SIZE         1024      // Размер буфера для приёма данных
+#define LED_GPIO         2         // Пин для светодиода (передатчик)
+#define PHOTO_GPIO       4         // Пин для фотодиода (приём)
+#define UART_PORT_NUM    UART_NUM_0  // UART для связи (USB)
+#define BUF_SIZE         1024      // Размер буфера для UART
+#define IDLE_TIMEOUT_MS  200       // Таймаут (в мс) для определения простоя передачи (приём)
 
-// Глобальная переменная для частоты (в Гц)
+//
+// Глобальная переменная для частоты передачи (битовая частота в Гц)
+// Может быть изменена командой вида "#FREQ <значение>"
+//
 volatile double frequency = 2.0;
 
-// Функция проверки входа
+//
+// Функция проверки входа – заглушка, всегда возвращает true.
+//
 bool check_input() {
-    return true; // Заглушка, всегда возвращает true
+    return true;
 }
 
-// Функция обработки входного режима
-void ensure_input_mode() {
-    printf("Режим входа активирован\n");
-    // Здесь можно добавить дополнительную логику
-}
-
-// Функция обработки специальных команд
+//
+// Функция обработки команд, например, смены частоты передачи.
+//
 void process_command(const char* cmd) {
     if (strncmp(cmd, "#FREQ", 5) == 0) {
         const char* arg = cmd + 5;
@@ -36,61 +41,172 @@ void process_command(const char* cmd) {
             char* endptr;
             double new_freq = strtod(arg, &endptr);
             if (endptr != arg && new_freq > 0) {
-                frequency = (float)new_freq;
-                printf("Частота изменена на %.2f Гц\n", frequency);
-            }
-            else {
+                frequency = new_freq;
+                printf("Частота передачи изменена на %.2f Гц\n", frequency);
+            } else {
                 printf("Неверное значение частоты: %s\n", arg);
             }
-        }
-        else {
+        } else {
             printf("Команда #FREQ требует аргумент, например: #FREQ 2\n");
         }
-    }
-    else {
+    } else {
         printf("Неизвестная команда: %s\n", cmd);
     }
 }
 
-void process_binary_data(const uint8_t* data, const int len) {
-    const int total_bits = len * 8;
-    int* bits = malloc(total_bits * sizeof(int));
+//
+// Функция передачи одного бита с манчестерским кодированием.
+// Для битового периода T = 1/frequency, каждая половина длится T/2 мкс.
+// Схема: для бита 0 – высокий уровень, затем низкий; для бита 1 – низкий уровень, затем высокий.
+//
+void send_manchester_bit(int bit) {
+    int half_period_us = (int)((1000000.0 / frequency) / 2);
+    if (bit == 0) {
+        gpio_set_level(LED_GPIO, 1);
+        ets_delay_us(half_period_us);
+        gpio_set_level(LED_GPIO, 0);
+        ets_delay_us(half_period_us);
+    } else {
+        gpio_set_level(LED_GPIO, 0);
+        ets_delay_us(half_period_us);
+        gpio_set_level(LED_GPIO, 1);
+        ets_delay_us(half_period_us);
+    }
+}
+
+//
+// Функция передачи массива данных (байт) с манчестерским кодированием.
+// Данные передаются от старшего к младшему биту каждого байта.
+//
+void process_binary_data(const uint8_t* data, int len) {
+    for (int i = 0; i < len; i++) {
+        for (int bit = 7; bit >= 0; bit--) {
+            int current = (data[i] >> bit) & 1;
+            send_manchester_bit(current);
+        }
+    }
+    // По окончании передачи устанавливаем низкий уровень на выходе
+    gpio_set_level(LED_GPIO, 0);
+}
+
+//
+// Функция приёма одного бита по фотодиоду с использованием фиксированного периода,
+// определяемого переменной frequency (для передачи). Приём реализуется по базовому опросу.
+// Здесь схема определения бита упрощена и может быть адаптирована под конкретную реализацию.
+//
+int receive_manchester_bit() {
+    int half_period_us = (int)((1000000.0 / frequency) / 2);
+    // Ожидаем изменения уровня (состояние покоя считаем равным 0)
+    while (gpio_get_level(PHOTO_GPIO) == 0) {
+        ets_delay_us(10);
+    }
+    int first_level = gpio_get_level(PHOTO_GPIO);
+    ets_delay_us(half_period_us);
+    int mid_level = gpio_get_level(PHOTO_GPIO);
+    int bit = -1;
+    // Пример: если первый уровень 0 и спустя полупериода сигнал 0, считаем бит 1, иначе – бит 0.
+    if (first_level == 0 && mid_level == 0)
+        bit = 1;
+    else if (first_level == 1 && mid_level == 1)
+        bit = 0;
+    ets_delay_us(half_period_us);
+    return bit;
+}
+
+//
+// Функция приёма манчестерского сигнала по фотодиоду.
+// Если передача по UART не проводится, система переходит в режим приёма.
+// Здесь осуществляется накопление битов до появления простоя, затем группы битов преобразуются в байты,
+// и полученные данные отправляются по UART.
+//
+void process_manchester_receive() {
+    printf("Приём по фотодиоду...\n");
+    // Динамический буфер для накопления битов
+    int capacity = 128;
+    int count = 0;
+    int *bits = malloc(capacity * sizeof(int));
     if (!bits) {
         printf("Ошибка выделения памяти\n");
         return;
     }
-    int index = 0;
-    for (int i = 0; i < len; i++) {
-        for (int bit = 7; bit >= 0; bit--)
-        {
-            bits[index++] = (data[i] >> bit) & 1;
+
+    // Ожидаем появление стартовой последовательности "10"
+    int preamble[2] = {-1, -1};
+    while (1) {
+        int bit = receive_manchester_bit();
+        preamble[0] = preamble[1];
+        preamble[1] = bit;
+        if (preamble[0] == 1 && preamble[1] == 0) {
+            // Сохраняем префикс "10"
+            bits[count++] = 1;
+            bits[count++] = 0;
+            printf("Обнаружена преамбула \"10\", начинаем приём данных\n");
+            break;
         }
     }
-    int i = 0;
-    while (i < total_bits) {
-        int current = bits[i];
-        int count = 1;
-        while ((i + count) < total_bits && bits[i + count] == current)
-        {
-            count++;
+
+    // Накопление битов до возникновения простоя (IDLE_TIMEOUT_MS)
+    TickType_t last_tick = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - last_tick) < pdMS_TO_TICKS(IDLE_TIMEOUT_MS)) {
+        int bit = receive_manchester_bit();
+        if (bit >= 0) {
+            if (count >= capacity) {
+                capacity *= 2;
+                int *temp = realloc(bits, capacity * sizeof(int));
+                if (!temp) {
+                    printf("Ошибка перераспределения памяти\n");
+                    free(bits);
+                    return;
+                }
+                bits = temp;
+            }
+            bits[count++] = bit;
+            last_tick = xTaskGetTickCount();
         }
-        int delay_ms = (int)(1000.0 / frequency);
-        for (int p = 0; p < count; p++)
-        {
-            gpio_set_level(LED_GPIO, current);
-            vTaskDelay(delay_ms / portTICK_PERIOD_MS);
-        }
-        i += count;
     }
-    gpio_set_level(LED_GPIO, 0);
+
+    // Группировка накопленных битов в байты
+    int num_bytes = count / 8;
+    if (num_bytes > 0) {
+        uint8_t *decoded = malloc(num_bytes);
+        if (!decoded) {
+            printf("Ошибка выделения памяти для декодирования\n");
+            free(bits);
+            return;
+        }
+        for (int i = 0; i < num_bytes; i++) {
+            uint8_t byte = 0;
+            for (int j = 0; j < 8; j++) {
+                byte = (byte << 1) | bits[i * 8 + j];
+            }
+            decoded[i] = byte;
+        }
+        // Отправка полученных данных по UART
+        printf("Приём по фотодиоду. Получено: (%d бит, %d байт)\n", count, num_bytes);
+        uart_write_bytes(UART_PORT_NUM, (const char*)decoded, num_bytes);
+        free(decoded);
+    } else {
+        printf("Недостаточно данных для формирования байта\n");
+    }
     free(bits);
 }
 
+//
+// Основной цикл приложения:
+// Если по UART поступают данные, они обрабатываются как команды или передаются с манчестерским кодированием через светодиод.
+// Если данные по UART отсутствуют, система переходит в режим приёма через фотодиод.
+//
 void app_main(void) {
+    // Настройка пина для светодиода (выход)
     gpio_pad_select_gpio(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     gpio_set_level(LED_GPIO, 0);
 
+    // Настройка пина для фотодиода (вход)
+    gpio_pad_select_gpio(PHOTO_GPIO);
+    gpio_set_direction(PHOTO_GPIO, GPIO_MODE_INPUT);
+
+    // Настройка UART
     const uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -104,24 +220,22 @@ void app_main(void) {
     uint8_t data[BUF_SIZE];
 
     while (1) {
-        if (check_input()) {
-            ensure_input_mode();
-        }
-
+        // Чтение данных с UART (режим передачи)
         int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, 20 / portTICK_PERIOD_MS);
-        if (len > 0)
-        {
-            if (data[0] == '#' && len < 100)
-            {
+        if (len > 0) {
+            // Если данные начинаются с '#' и их длина меньше 100 байт – обрабатываем команду
+            if (data[0] == '#' && len < 100) {
                 char cmd[BUF_SIZE];
                 memcpy(cmd, data, len);
                 cmd[len] = '\0';
                 process_command(cmd);
-            }
-            else
-            {
+            } else {
+                // Передача данных с манчестерским кодированием через светодиод
                 process_binary_data(data, len);
             }
+        } else {
+            // Если по UART нет передачи, переходим в режим приёма через фотодиод
+            process_manchester_receive();
         }
     }
 }
