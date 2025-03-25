@@ -13,8 +13,7 @@ void send_manchester_bit(const int bit, const double baseFrequency) {
         ets_delay_us(half_period_us);
         gpio_set_level(LED_GPIO, 0);
         ets_delay_us(half_period_us);
-    }
-    else {
+    } else {
         gpio_set_level(LED_GPIO, 0);
         ets_delay_us(half_period_us);
         gpio_set_level(LED_GPIO, 1);
