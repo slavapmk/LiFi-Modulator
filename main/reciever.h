@@ -11,5 +11,6 @@ void process_manchester_receive(
     uart_port_t uart_port
 );
 void test_recieve_all(int threshold);
+void test_recieve_raw(void);
 
 #endif

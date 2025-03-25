@@ -7,6 +7,7 @@
 #include <rom/ets_sys.h>
 
 #define BUFFER_SIZE 128
+
 void process_manchester_receive(
     const int threshold, const double baseFrequency,
     uart_port_t uart_port
@@ -138,10 +139,22 @@ void process_manchester_receive(
 
 
 void test_recieve_all(const int threshold) {
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 96; i++) {
         const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
         const int signal = adc_reading > threshold ? 1 : 0;
-        printf("%d", signal);
+        if (signal == 0) {
+            printf(" ");
+        } else {
+            printf("█");
+        }
+    }
+    printf("\n");
+}
+
+void test_recieve_raw() {
+    for (int i = 0; i < 8; i++) {
+        const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
+        printf("%d ", adc_reading);
     }
     printf("\n");
 }

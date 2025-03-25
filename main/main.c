@@ -33,6 +33,9 @@
 // Может быть изменена командой вида "#FREQ <значение>"
 volatile double frequency = 100.0;
 volatile int threshold = 110;
+volatile bool normalRead = 1;
+volatile bool rawRead = 0;
+volatile bool binRead = 0;
 
 //
 // Функция обработки команд, например, смены частоты передачи.
@@ -72,6 +75,21 @@ void process_command(const char* cmd) {
         } else {
             printf("Команда #THR требует аргумент, например: #THR 2\n");
         }
+    } else if (strncmp(cmd, "#NOR", 4) == 0) {
+        printf("Normal mode\n");
+        rawRead = 0;
+        binRead = 0;
+        normalRead = 1;
+    } else if (strncmp(cmd, "#RAW", 4) == 0) {
+        printf("Raw mode\n");
+        rawRead = 1;
+        binRead = 0;
+        normalRead = 0;
+    } else if (strncmp(cmd, "#BIN", 4) == 0) {
+        printf("Bin mode\n");
+        rawRead = 0;
+        binRead = 1;
+        normalRead = 0;
     } else {
         printf("Неизвестная команда: %s\n", cmd);
     }
@@ -190,8 +208,18 @@ void app_main(void) {
                 // Передача данных с манчестерским кодированием через светодиод
                 process_binary_data(data, len, frequency);
             }
-        } else if (READ_MODE) {
-            process_manchester_receive(threshold, frequency, UART_PORT_NUM);
+        }
+        if (READ_MODE) {
+            if (normalRead) {
+                process_manchester_receive(threshold, frequency, UART_PORT_NUM);
+            } else if (rawRead) {
+                test_recieve_raw();
+            } else if (binRead) {
+                for (int i = 0; i < 100; i++) {
+                    test_recieve_all(threshold);
+                    ets_delay_us(1);
+                }
+            }
         }
         vTaskDelay(1);
     }
