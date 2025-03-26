@@ -14,108 +14,78 @@ void process_manchester_receive(
 ) {
     uint8_t buffer[BUFFER_SIZE];
     int buffer_index = 0;
+    uint8_t received_byte = 0;
+    int bit_count = 0;
 
-    // Переменные для формирования декодированного байта
-    uint8_t decoded_byte = 0;
-    int decoded_bit_count = 0;
+    // Флаг, показывающий, что стартовая последовательность (10) успешно проверена
+    bool start_sequence_checked = false;
 
-    // Переменные для накопления двух полубитов (каждый интервал)
-    uint8_t raw_bits = 0;
-    int raw_bit_count = 0;
-
-    // Расчёт целевого интервала для одного полупериода (в микросекундах)
+    // Расчёт целевого интервала для одного полупериода в микросекундах
     int max_delay_period_us = (int)(1000000.0 / baseFrequency * 10);
     int half_period_target_us = (int)(1000000.0 / baseFrequency / 2);
     if (half_period_target_us < 1) half_period_target_us = 1;
 
     int sync_state = 0; // Состояние синхронизации
     uint64_t last_signal_time = esp_timer_get_time(); // Время последнего изменения сигнала
-    uint64_t period_start = 0; // Отсчёт интервала для формирования полубита
-
-    // Для отслеживания первой синхронизирующей последовательности
-    uint8_t sync_sequence = 0b0110; // Начальная синхронизирующая последовательность (манчестерский код для 10)
-    int sync_bit_count = 0;
+    uint64_t period_start = 0; // Отсчёт интервала для формирования бита
 
     while (1) {
         uint64_t now = esp_timer_get_time();
         int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
         int signal = (adc_reading > threshold) ? 1 : 0;
 
-        // Проверка на изменение сигнала (для синхронизации)
-        if (signal != (last_signal_time > 0 ? (last_signal_time % 2) : 0)) {
-            last_signal_time = now;
+        if (sync_state == 0) {
+            // Поиск первого фронта для синхронизации
+            if (signal) {
+                sync_state = 1;
+                period_start = now;
+            }
+        } else if (sync_state == 1) {
+            // Завершаем первый полупериод
+            if (!signal) {
+                sync_state = 2;
+                last_signal_time = now;
+            }
+        } else {
+            // Принимаем биты через каждые half_period_target_us микросекунд
+            if (now - period_start >= (uint64_t)half_period_target_us) {
+                period_start += half_period_target_us;
 
-            if (sync_state == 0) {
-                // Ожидаем первую синхронизирующую последовательность 0110
-                if (((raw_bits << 1) | signal) == sync_sequence) {
-                    sync_bit_count++;
-                    raw_bits = (raw_bits << 1) | signal;
-                    if (sync_bit_count == 4) {
-                        // После получения 4 бит синхронизации начинаем прием
-                        sync_state = 1;
-                        raw_bits = 0;
-                        raw_bit_count = 0;
-                        decoded_bit_count = 0;
-                        decoded_byte = 0;
-                    }
+                // Чтение текущего состояния сигнала
+                if (signal) {
+                    last_signal_time = now;
+                    received_byte = (received_byte << 1) | 1;
                 } else {
-                    raw_bits = (raw_bits << 1) | signal;
-                    raw_bit_count++;
-                    if (raw_bit_count > 4) {
-                        // Сбрасываем если последовательность не совпала
-                        raw_bits = 0;
-                        raw_bit_count = 0;
+                    received_byte = (received_byte << 1);
+                }
+                bit_count++;
+
+                // Проверка стартовой последовательности в первых двух битах
+                if (!start_sequence_checked && bit_count == 2) {
+                    // Проверяем, что первые два бита равны 10
+                    if ((received_byte & 0x03) != 0x02) {
+                        // Если не совпадает, сбрасываем приём и возвращаемся к синхронизации
+                        bit_count = 0;
+                        received_byte = 0;
+                        sync_state = 0;
+                    } else {
+                        // Если стартовая последовательность корректна, оставляем её в данных
+                        start_sequence_checked = true;
                     }
                 }
-            }
-            // Если мы в состоянии синхронизации, принимаем данные
-            else if (sync_state == 1) {
-                // Принимаем полубит каждые half_period_target_us микросекунд
-                if (now - period_start >= (uint64_t)half_period_target_us) {
-                    period_start += half_period_target_us;
 
-                    // Сдвигаем накопление полубитов и добавляем текущий сигнал (1 или 0)
-                    raw_bits = (raw_bits << 1) | (signal ? 1 : 0);
-                    raw_bit_count++;
-
-                    // Когда накоплено 2 полубита, декодируем их как один логический бит
-                    if (raw_bit_count == 2) {
-                        int logical_bit = -1;
-                        // По поправке: если пара равна 01, то это логическая 1, если 10 — логическая 0
-                        if (raw_bits == 0b01) {
-                            logical_bit = 1;
-                        } else if (raw_bits == 0b10) {
-                            logical_bit = 0;
-                        } else {
-                            // Если пара некорректна (00 или 11), сбрасываем накопление и возвращаемся к синхронизации
-                            raw_bit_count = 0;
-                            raw_bits = 0;
-                            sync_state = 0;
-                            continue;
-                        }
-
-                        // Добавляем декодированный бит в сформированный байт
-                        decoded_byte = (decoded_byte << 1) | logical_bit;
-                        decoded_bit_count++;
-
-                        // Сбрасываем переменные для следующей пары
-                        raw_bit_count = 0;
-                        raw_bits = 0;
-
-                        // Если накоплено 8 декодированных бит, сохраняем байт в буфер
-                        if (decoded_bit_count == 8) {
-                            if (buffer_index < BUFFER_SIZE) {
-                                buffer[buffer_index++] = decoded_byte;
-                            } else {
-                                // Переполнение буфера
-                                break;
-                            }
-                            decoded_bit_count = 0;
-                            decoded_byte = 0;
-                        }
+                // Формируем байт по 8 бит
+                if (bit_count == 8) {
+                    if (buffer_index < BUFFER_SIZE) {
+                        buffer[buffer_index++] = received_byte;
+                    } else {
+                        // Переполнение буфера
+                        break;
                     }
-
-                    last_signal_time = now;
+                    bit_count = 0;
+                    received_byte = 0;
+                    // Если требуется, можно сбрасывать флаг start_sequence_checked для каждого нового пакета,
+                    // но если стартовая последовательность передаётся лишь в начале, флаг остаётся установленным.
                 }
             }
         }
@@ -125,15 +95,15 @@ void process_manchester_receive(
             break;
         }
 
-        // Задержка для почти непрерывного опроса
+        // Задержка 1 мкс для непрерывного опроса
         ets_delay_us(1);
     }
 
     // Отправка накопленного буфера по завершении приёма
     if (buffer_index > 0) {
-        printf("\r\n");
+        printf("\n");
         uart_write_bytes(uart_port, buffer, buffer_index);
-        printf("\r\n");
+        printf("\n");
     }
 }
 
@@ -152,9 +122,9 @@ void test_recieve_all(const int threshold) {
 }
 
 void test_recieve_raw() {
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 16; i++) {
         const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
-        printf("%d ", adc_reading);
+        printf("%03d ", adc_reading);
     }
     printf("\n");
 }
