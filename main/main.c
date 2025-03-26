@@ -15,8 +15,10 @@
 #include <string.h>
 // #include <driver/adc.h>
 #include <driver/adc.h>
+#include <hal/wdt_hal.h>
 #include <rom/ets_sys.h>
 #include <rom/gpio.h>
+#include <sys/time.h>
 
 #define READ_MODE 1
 
@@ -36,6 +38,7 @@ volatile int threshold = 110;
 volatile bool normalRead = 1;
 volatile bool rawRead = 0;
 volatile bool binRead = 0;
+volatile bool readMode = 0;
 
 //
 // Функция обработки команд, например, смены частоты передачи.
@@ -75,23 +78,32 @@ void process_command(const char* cmd) {
         } else {
             printf("Команда #THR требует аргумент, например: #THR 2\n");
         }
-    } else if (strncmp(cmd, "#NOR", 4) == 0) {
+    } else if (strncmp(cmd, "#RNOR", 5) == 0) {
         printf("Normal mode\n");
         rawRead = 0;
         binRead = 0;
         normalRead = 1;
-    } else if (strncmp(cmd, "#RAW", 4) == 0) {
+        readMode = 1;
+    } else if (strncmp(cmd, "#RRAW", 5) == 0) {
         printf("Raw mode\n");
         rawRead = 1;
         binRead = 0;
         normalRead = 0;
-    } else if (strncmp(cmd, "#BIN", 4) == 0) {
+        readMode = 1;
+    } else if (strncmp(cmd, "#RBIN", 5) == 0) {
         printf("Bin mode\n");
         rawRead = 0;
         binRead = 1;
         normalRead = 0;
+        readMode = 1;
+    } else if (strncmp(cmd, "#SEND", 5) == 0) {
+        printf("Send mode\n");
+        rawRead = 0;
+        binRead = 0;
+        normalRead = 0;
+        readMode = 0;
     } else {
-        printf("Неизвестная команда: %s\n", cmd);
+        printf("Unknown command: %s\n", cmd);
     }
 }
 
@@ -193,10 +205,11 @@ void app_main(void) {
     // Настройка аттенюации для канала ADC1_CHANNEL_4 (GPIO32)
     adc1_config_channel_atten(ADC1_CHANNEL_4, ADC_ATTEN_DB_12);
 
-    uint8_t data[BUF_SIZE];
-
     while (1) {
-        const int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, 20 / portTICK_PERIOD_MS);
+        uint8_t data[BUF_SIZE];
+        const TickType_t waitTicks = readMode ? 1 : 20 / portTICK_PERIOD_MS;
+        const int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, waitTicks);
+
         if (len > 0) {
             if (data[0] == '#' && len < 100) {
                 // Обработка команды
@@ -204,23 +217,21 @@ void app_main(void) {
                 memcpy(cmd, data, len);
                 cmd[len] = '\0';
                 process_command(cmd);
-            } else if (!READ_MODE) {
-                // Передача данных с манчестерским кодированием через светодиод
+            } else if (!readMode) {
                 process_binary_data(data, len, frequency);
             }
         }
-        if (READ_MODE) {
+        if (readMode) {
             if (normalRead) {
                 process_manchester_receive(threshold, frequency, UART_PORT_NUM);
             } else if (rawRead) {
-                test_recieve_raw();
+                test_recieve_raw(UART_PORT_NUM);
+                ets_delay_us(1);
             } else if (binRead) {
-                for (int i = 0; i < 100; i++) {
-                    test_recieve_all(threshold);
-                    ets_delay_us(1);
-                }
+                test_recieve_all(UART_PORT_NUM, threshold);
+                ets_delay_us(1);
             }
         }
-        vTaskDelay(1);
+        rtc_wdt_feed();
     }
 }

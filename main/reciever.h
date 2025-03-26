@@ -10,7 +10,7 @@ void process_manchester_receive(
     int threshold, double baseFrequency,
     uart_port_t uart_port
 );
-void test_recieve_all(int threshold);
-void test_recieve_raw(void);
+void test_recieve_all(uart_port_t uart_port, int threshold);
+void test_recieve_raw(uart_port_t uart_port);
 
 #endif

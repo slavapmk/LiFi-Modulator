@@ -1,5 +1,6 @@
 #include "sender.h"
 
+#include <rtc_wdt.h>
 #include <driver/gpio.h>
 #include <rom/ets_sys.h>
 
@@ -23,6 +24,7 @@ void send_manchester_bit(const int bit, const int half_period_us) {
         gpio_set_level(LED_GPIO, 1);
         ets_delay_us(half_period_us * 2);
     }
+    rtc_wdt_feed();
 }
 
 void process_binary_data(const uint8_t* data, const int len, const double baseFrequency) {

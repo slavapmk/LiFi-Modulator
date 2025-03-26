@@ -2,6 +2,7 @@
 
 #include <esp_timer.h>
 #include <stdio.h>
+#include <string.h>
 #include <driver/adc.h>
 #include <driver/uart.h>
 #include <rom/ets_sys.h>
@@ -108,23 +109,32 @@ void process_manchester_receive(
 }
 
 
-void test_recieve_all(const int threshold) {
+void test_recieve_all(uart_port_t uart_port, const int threshold) {
+    char buffer[98]; // 96 символов + 1 для \n
+    int offset = 0;
+
     for (int i = 0; i < 96; i++) {
         const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
         const int signal = adc_reading > threshold ? 1 : 0;
-        if (signal == 0) {
-            printf(" ");
-        } else {
-            printf("█");
-        }
+        buffer[offset++] = signal ? '#' : ' ';
     }
-    printf("\n");
+
+    buffer[offset++] = '\r'; // Добавляем перенос строки
+    buffer[offset++] = '\n'; // Добавляем перенос строки
+    uart_write_bytes(uart_port, buffer, offset);
 }
 
-void test_recieve_raw() {
+
+void test_recieve_raw(const uart_port_t uart_port) {
+    char buffer[66];
+    int offset = 0;
+
     for (int i = 0; i < 16; i++) {
         const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
-        printf("%03d ", adc_reading);
+        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "%03d ", adc_reading);
     }
-    printf("\n");
+    buffer[64] = '\r';
+    buffer[65] = '\n';
+
+    uart_write_bytes(uart_port, buffer, strlen(buffer));
 }
