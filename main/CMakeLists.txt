@@ -1,2 +1,4 @@
-idf_component_register(SRCS "main.c" "reciever.c" "sender.c"
-        INCLUDE_DIRS ".")
+idf_component_register(
+        SRCS "main.c" "reciever.c" "sender.c" "synchronizer.c"
+        INCLUDE_DIRS "."
+)
