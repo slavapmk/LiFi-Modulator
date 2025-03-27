@@ -1,5 +1,7 @@
 #include "synchronizer.h"
 
+#include <rom/ets_sys.h>
+
 // 200 мс в микросекундах
 #define TIMEOUT_US 200000
 // Полная длина синхронизирующей последовательности
@@ -13,7 +15,7 @@ const int pattern[PATTERN_LENGTH] = {1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0
 // Функция ожидающая паттерн стартовой последовательности перед каждым сообщением
 // При обнаружении таковой в течение TIMEOUT_US мкс сразу же возвращает 1
 // При не обнаружении - 0
-int await_end_sync(void) {
+int await_end_sync(const int period_us, const int analogue_threshold) {
     // Буфер для накопления распознанных битов синхронизации
     int sync_buffer[PATTERN_LENGTH];
     // Текущая длина буфера
@@ -22,15 +24,15 @@ int await_end_sync(void) {
     // Прошедшее время (в микросекундах)
     int elapsed = 0;
     // Считываем начальное значение сигнала
-    int last_bit = recieve_bit();
+    int last_bit = receive_bit(analogue_threshold);
     // Время, сколько микросекунд сигнал оставался неизменным
     int stable_duration = 0;
 
     // Непрерывное считывание в течение таймаута
     while (elapsed < TIMEOUT_US) {
-        delay_us(1);
+        ets_delay_us(1);
         elapsed++;
-        int current_bit = recieve_bit();
+        const int current_bit = receive_bit(analogue_threshold);
 
         if (current_bit == last_bit) {
             // Сигнал не изменился – увеличиваем длительность текущего уровня
@@ -39,8 +41,8 @@ int await_end_sync(void) {
             // При обнаружении изменения определяем, сколько битов передавалось:
             // если длительность меньше порога (1.5 * period), считаем, что передан один бит,
             // иначе – два одинаковых бита (для случая, когда 0 горит в 2 раза дольше).
-            int threshold = (int)(1.5 * period);
-            int count = (stable_duration < threshold) ? 1 : 2;
+            const int threshold_duration = (int)(1.5 * period_us);
+            const int count = (stable_duration < threshold_duration) ? 1 : 2;
 
             // Добавляем полученный бит count раз в буфер
             for (int j = 0; j < count; j++) {
@@ -59,7 +61,7 @@ int await_end_sync(void) {
             // проверяем, соответствует ли текущий буфер соответствующему суффиксу синхронизирующей последовательности.
             if (sync_buffer_len >= MIN_SYNC_BITS) {
                 // Если буфер не заполнен полностью, сравниваем с суффиксом полной последовательности
-                int start_index = PATTERN_LENGTH - sync_buffer_len;
+                const int start_index = PATTERN_LENGTH - sync_buffer_len;
                 int match = 1;
                 for (int i = 0; i < sync_buffer_len; i++) {
                     if (sync_buffer[i] != pattern[start_index + i]) {

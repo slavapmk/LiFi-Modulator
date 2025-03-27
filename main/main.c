@@ -319,11 +319,11 @@ void app_main(void) {
         // Режимы чтения
         if (readMode) {
             if (normalRead) {
-                // Попытка приёма экодированной информации
+                // Попытка приёма кодированной информации
                 process_manchester_receive(threshold, frequency, UART_PORT_NUM);
             } else if (rawRead) {
                 // Режим аналогового чтения
-                test_recieve_raw(UART_PORT_NUM);
+                test_receive_raw(UART_PORT_NUM);
                 ets_delay_us(100);
             } else if (binRead) {
                 // Режим бинарного чтения

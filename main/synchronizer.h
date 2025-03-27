@@ -3,12 +3,8 @@
 
 // Объявления внешних функций и переменной:
 // Функция получения бита (возвращает 0 или 1)
-extern int recieve_bit(void);
-// Функция задержки в микросекундах
-extern void delay_us(int microseconds);
-// Глобальная переменная, задающая длительность одного бита (в микросекундах)
-extern int period;
+extern int receive_bit(int threshold);
 
-int await_end_sync(void);
+int await_end_sync(int period_us);
 
 #endif //SYNCHRONIZER_H
