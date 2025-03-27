@@ -13,36 +13,73 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-// #include <driver/adc.h>
 #include <driver/adc.h>
-#include <hal/wdt_hal.h>
 #include <rom/ets_sys.h>
 #include <rom/gpio.h>
 #include <sys/time.h>
 
-#define READ_MODE 1
+// Светодиод на GPIO 17 (TX2 ESP32)
+#define LED_GPIO         GPIO_NUM_17
 
-// Светодиод на GPIO 17 (TX ESP32)
-#define PHOTO_GPIO       16         // Фотодиод на GPIO 16 (RX ESP32)
 #define UART_PORT_NUM    UART_NUM_0  // UART для связи (USB)
 #define BUF_SIZE         1024        // Размер буфера для UART
 #define IDLE_TIMEOUT_MS  200         // Таймаут (мс) для определения простоя передачи (приём)
 
 // Максимально возможная частота передачи (в Гц)
 #define MAX_FREQ         500000
+#define BLINK_TIME_SECS 2
 
 // Глобальная переменная для частоты передачи (битовая частота в Гц)
 // Может быть изменена командой вида "#FREQ <значение>"
 volatile double frequency = 100.0;
+volatile int blink_frequency = 100;
 volatile int threshold = 110;
 volatile bool normalRead = 1;
 volatile bool rawRead = 0;
 volatile bool binRead = 0;
 volatile bool readMode = 0;
+volatile bool blinkMode = 0;
 
-//
-// Функция обработки команд, например, смены частоты передачи.
-//
+void found_threshold(void) {
+    printf("Scanning min and max value\n");
+    int max;
+    int min = max = adc1_get_raw(ADC1_CHANNEL_4);
+    for (int i = 0; i <= 4096; i++) {
+        const int v = adc1_get_raw(ADC1_CHANNEL_4);
+        if (max < v) {
+            max = v;
+        }
+        if (min > v) {
+            min = v;
+        }
+        ets_delay_us(1);
+    }
+    const int middle = (min + max) / 2;
+    printf("Min: %d, Max: %d, Middle point: %d\nScanning for AVG low and high\n", min, max, middle);
+
+    long long int sum_low = 0;
+    int count_low = 0;
+    long long int sum_high = 0;
+    int count_high = 0;
+    for (int i = 0; i <= 50000; i++) {
+        const int v = adc1_get_raw(ADC1_CHANNEL_4);
+        if (v < middle) {
+            sum_low += v;
+            count_low++;
+        } else if (v > middle) {
+            sum_high += v;
+            count_high++;
+        }
+        ets_delay_us(1);
+    }
+
+    const int middle_low = sum_low / count_low;
+    const int middle_high = sum_high / count_high;
+    printf("Low: %d, High: %d\n", middle_low, middle_high);
+    threshold = (middle_low + middle_high) / 2;
+    printf("Set THR to %d\n", threshold);
+}
+
 void process_command(const char* cmd) {
     if (strncmp(cmd, "#FREQ", 5) == 0) {
         const char* arg = cmd + 5;
@@ -69,8 +106,8 @@ void process_command(const char* cmd) {
         if (*arg) {
             char* endptr;
             const double new_thr = strtod(arg, &endptr);
-            if (endptr != arg && new_thr > 0) {
-                threshold = new_thr;
+            if (endptr != arg && new_thr > 0 && new_thr < 4096) {
+                threshold = (int)new_thr;
                 printf("Threshold installed to %d\n", threshold);
             } else {
                 printf("Incorrect threshold: %s\n", arg);
@@ -78,30 +115,58 @@ void process_command(const char* cmd) {
         } else {
             printf("Команда #THR требует аргумент, например: #THR 2\n");
         }
+    } else if (strncmp(cmd, "#BLINK", 6) == 0) {
+        const char* arg = cmd + 6;
+        while (*arg == ' ' || *arg == '\t') {
+            arg++;
+        }
+        if (*arg) {
+            char* endptr;
+            const double new_blink_freq = strtod(arg, &endptr);
+            if (endptr != arg && new_blink_freq > 0 && new_blink_freq <= MAX_FREQ * 2) {
+                blink_frequency = (int)new_blink_freq;
+                rawRead = 0;
+                binRead = 0;
+                normalRead = 0;
+                readMode = 0;
+                blinkMode = 1;
+                printf("Blinking with %d Hz\n", blink_frequency);
+            } else {
+                printf("Incorrect frequency: %s\n", arg);
+            }
+        } else {
+            printf("Команда #BLINK требует аргумент, например: #BLINK 2 (частота в Гц от 1 до %d)\n", MAX_FREQ * 2);
+        }
     } else if (strncmp(cmd, "#RNOR", 5) == 0) {
         printf("Normal mode\n");
         rawRead = 0;
         binRead = 0;
         normalRead = 1;
         readMode = 1;
+        blinkMode = 0;
     } else if (strncmp(cmd, "#RRAW", 5) == 0) {
         printf("Raw mode\n");
         rawRead = 1;
         binRead = 0;
         normalRead = 0;
         readMode = 1;
+        blinkMode = 0;
     } else if (strncmp(cmd, "#RBIN", 5) == 0) {
         printf("Bin mode\n");
         rawRead = 0;
         binRead = 1;
         normalRead = 0;
         readMode = 1;
+        blinkMode = 0;
     } else if (strncmp(cmd, "#SEND", 5) == 0) {
         printf("Send mode\n");
         rawRead = 0;
         binRead = 0;
         normalRead = 0;
         readMode = 0;
+        blinkMode = 0;
+    } else if (strncmp(cmd, "#ATHR", 5) == 0) {
+        found_threshold();
     } else {
         printf("Unknown command: %s\n", cmd);
     }
@@ -186,7 +251,24 @@ void process_command(const char* cmd) {
 //     }
 // }
 
+#define BASE_BLINK_FREQ 10
+
+void app_main__(void) {
+    gpio_pad_select_gpio(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+    const int period = 500000 / BASE_BLINK_FREQ;
+    while (1) {
+        gpio_set_level(LED_GPIO, 1);
+        ets_delay_us(period);
+        gpio_set_level(LED_GPIO, 0);
+        ets_delay_us(period);
+        rtc_wdt_feed();
+    }
+}
+
 void app_main(void) {
+    // Настраиваем подключение по COM порту (UART):
+    // Ставим БОД, битовые режимы, отключаем все стандартные логи
     const uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -205,9 +287,12 @@ void app_main(void) {
     // Настройка аттенюации для канала ADC1_CHANNEL_4 (GPIO32)
     adc1_config_channel_atten(ADC1_CHANNEL_4, ADC_ATTEN_DB_12);
 
+    gpio_pad_select_gpio(LED_GPIO);
+    gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
+
     while (1) {
         uint8_t data[BUF_SIZE];
-        const TickType_t waitTicks = readMode ? 1 : 20 / portTICK_PERIOD_MS;
+        const TickType_t waitTicks = readMode || blinkMode ? 0 : pdMS_TO_TICKS(100);
         const int len = uart_read_bytes(UART_PORT_NUM, data, BUF_SIZE, waitTicks);
 
         if (len > 0) {
@@ -221,17 +306,33 @@ void app_main(void) {
                 process_binary_data(data, len, frequency);
             }
         }
+        if (blinkMode) {
+            const int period = 500000 / blink_frequency;
+            // BLINK_TIME_SECS секунд непрерывных Blink морганий, прежде чем сделаем попытку ввода с консоли
+            // for (int i = 0; i < (BLINK_TIME_SECS * 1000000 / period); ++i) {
+                gpio_set_level(LED_GPIO, 1);
+                ets_delay_us(period);
+                gpio_set_level(LED_GPIO, 0);
+                ets_delay_us(period);
+            // }
+        }
+        // Режимы чтения
         if (readMode) {
             if (normalRead) {
+                // Попытка приёма экодированной информации
                 process_manchester_receive(threshold, frequency, UART_PORT_NUM);
             } else if (rawRead) {
+                // Режим аналогового чтения
                 test_recieve_raw(UART_PORT_NUM);
-                ets_delay_us(1);
+                ets_delay_us(100);
             } else if (binRead) {
+                // Режим бинарного чтения
                 test_recieve_all(UART_PORT_NUM, threshold);
-                ets_delay_us(1);
+                ets_delay_us(100);
             }
         }
+
+        // Сбрасываем ("кормим") Watchdog таймер, чтобы не было принудительного завершения программы
         rtc_wdt_feed();
     }
 }
