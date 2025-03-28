@@ -1,5 +1,7 @@
 #include "synchronizer.h"
 
+#include <rtc_wdt.h>
+#include <hal/wdt_hal.h>
 #include <rom/ets_sys.h>
 
 // 200 мс в микросекундах
@@ -30,6 +32,7 @@ int await_end_sync(const int period_us, const int analogue_threshold) {
 
     // Непрерывное считывание в течение таймаута
     while (elapsed < TIMEOUT_US) {
+        rtc_wdt_feed();
         ets_delay_us(1);
         elapsed++;
         const int current_bit = receive_bit(analogue_threshold);

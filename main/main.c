@@ -73,8 +73,8 @@ void found_threshold(void) {
         ets_delay_us(1);
     }
 
-    const int middle_low = sum_low / count_low;
-    const int middle_high = sum_high / count_high;
+    const int middle_low = (sum_low / count_low);
+    const int middle_high = (sum_high / count_high);
     printf("Low: %d, High: %d\n", middle_low, middle_high);
     threshold = (middle_low + middle_high) / 2;
     printf("Set THR to %d\n", threshold);
@@ -253,7 +253,8 @@ void process_command(const char* cmd) {
 
 #define BASE_BLINK_FREQ 10
 
-void app_main__(void) {
+// Простая функция, непрерывного мигания
+void app_main_(void) {
     gpio_pad_select_gpio(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
     const int period = 500000 / BASE_BLINK_FREQ;
@@ -327,7 +328,7 @@ void app_main(void) {
                 ets_delay_us(100);
             } else if (binRead) {
                 // Режим бинарного чтения
-                test_recieve_all(UART_PORT_NUM, threshold);
+                test_receive_all(UART_PORT_NUM, threshold);
                 ets_delay_us(100);
             }
         }
