@@ -76,7 +76,7 @@ void found_threshold(void) {
     const int middle_low = (sum_low / count_low);
     const int middle_high = (sum_high / count_high);
     printf("Low: %d, High: %d\n", middle_low, middle_high);
-    threshold = (middle_low + middle_high) / 2;
+    threshold = (middle_low + 0.5 * (middle_high - middle_low));
     printf("Set THR to %d\n", threshold);
 }
 
@@ -253,7 +253,7 @@ void process_command(const char* cmd) {
 
 #define BASE_BLINK_FREQ 10
 
-// Простая функция, непрерывного мигания
+// Простая функция непрерывного мигания
 void app_main_(void) {
     gpio_pad_select_gpio(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
@@ -311,10 +311,10 @@ void app_main(void) {
             const int period = 500000 / blink_frequency;
             // BLINK_TIME_SECS секунд непрерывных Blink морганий, прежде чем сделаем попытку ввода с консоли
             // for (int i = 0; i < (BLINK_TIME_SECS * 1000000 / period); ++i) {
-                gpio_set_level(LED_GPIO, 1);
-                ets_delay_us(period);
-                gpio_set_level(LED_GPIO, 0);
-                ets_delay_us(period);
+            gpio_set_level(LED_GPIO, 1);
+            ets_delay_us(period);
+            gpio_set_level(LED_GPIO, 0);
+            ets_delay_us(period);
             // }
         }
         // Режимы чтения

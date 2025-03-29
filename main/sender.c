@@ -4,7 +4,10 @@
 #include <driver/gpio.h>
 #include <rom/ets_sys.h>
 
+// Esp32 TX2 (GPIO 17)
 #define LED_GPIO         17
+
+#define SYNC_FREQ 100
 
 void send_manchester_bit(const int bit, const int half_period_us) {
     if (bit == 0) {
@@ -30,17 +33,17 @@ void send_manchester_bit(const int bit, const int half_period_us) {
 void process_binary_data(const uint8_t* data, const int len, const double baseFrequency) {
     int half_period_us = (int)(1000000.0 / baseFrequency / 2);
     if (half_period_us < 1) half_period_us = 1;
+    int sync_half_period_us = (int)(1000000.0 / SYNC_FREQ / 2);
+    if (sync_half_period_us < 1) sync_half_period_us = 1;
 
     for (int i = 0; i < 4; i++) {
-        send_manchester_bit(0, half_period_us);
+        send_manchester_bit(0, sync_half_period_us);
     }
     for (int i = 0; i < 3; i++) {
-        send_manchester_bit(1, half_period_us);
+        send_manchester_bit(1, sync_half_period_us);
     }
-    send_manchester_bit(-1, half_period_us);
+    send_manchester_bit(-1, sync_half_period_us);
 
-    const int period_us = (int)(1000000.0 / baseFrequency);
-    ets_delay_us(period_us);
     for (int i = 0; i < len; i++) {
         const uint8_t data_byte = data[i];
         for (int bit = 7; bit >= 0; bit--) {
