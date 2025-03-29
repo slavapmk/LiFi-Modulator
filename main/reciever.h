@@ -18,4 +18,6 @@ void test_receive_all(uart_port_t uart_port, int threshold);
 // Аналоговое чтение строки
 void test_receive_raw(uart_port_t uart_port);
 
+void init_receiver(void);
+
 #endif

@@ -291,6 +291,8 @@ void app_main(void) {
     gpio_pad_select_gpio(LED_GPIO);
     gpio_set_direction(LED_GPIO, GPIO_MODE_OUTPUT);
 
+    init_receiver();
+
     while (1) {
         uint8_t data[BUF_SIZE];
         const TickType_t waitTicks = readMode || blinkMode ? 0 : pdMS_TO_TICKS(100);

@@ -18,6 +18,8 @@
 #define MIN_SYNC_BITS 10
 // Размер буфера сканирования для усреднения
 #define READ_BUFFER_LENGTH 10
+// Максимальный период для одного бита в микросекундах
+#define MAX_STABLE_DURATION 15000
 
 // Синхронизирующая последовательность: 1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0
 const int pattern[PATTERN_LENGTH] = {1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1};
@@ -112,10 +114,16 @@ int check_buffers() {
     return true;
 }
 
-int await_end_sync(const int analogue_threshold) {
+void init_synchronizer() {
     for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
         sync_buffer[i] = 0;
     }
+}
+
+// Функция ожидающая паттерн стартовой последовательности перед каждым сообщением
+// При обнаружении таковой в течение TIMEOUT_US мкс сразу же возвращает 1
+// При не обнаружении - 0
+int await_end_sync(const int analogue_threshold) {
 
     clear_read_buffer();
 
@@ -124,7 +132,6 @@ int await_end_sync(const int analogue_threshold) {
     double last_bit = -1;
     const int64_t start_time = esp_timer_get_time();
     int64_t stable_duration_start = 0;
-    const int64_t max_stable_duration = 15000;
     int filled_count = 0;
     while (1) {
         rtc_wdt_feed();
@@ -139,13 +146,13 @@ int await_end_sync(const int analogue_threshold) {
             if (last_bit != -1) {
                 const int64_t diff = esp_timer_get_time() - stable_duration_start;
 
-                for (int i = 0; i < (diff > max_stable_duration ? 2 : 1); ++i) {
+                for (int i = 0; i < (diff > MAX_STABLE_DURATION ? 2 : 1); ++i) {
                     // for (int i = 0; i < (diff / max_stable_duration); ++i) {
                     shift_left_and_append_double(sync_buffer, SYNC_BUFFER_LENGTH, last_bit);
                 }
 
                 char console_buffer[32];
-                snprintf(console_buffer, sizeof(console_buffer), "Delay %6lld / %6lld \r\n", diff, max_stable_duration);
+                snprintf(console_buffer, sizeof(console_buffer), "Delay %6lld / %6d \r\n", diff, MAX_STABLE_DURATION);
                 uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
             }
             print_int_array(sync_buffer, SYNC_BUFFER_LENGTH);
@@ -157,6 +164,9 @@ int await_end_sync(const int analogue_threshold) {
             clear_read_buffer();
             filled_count = 0;
             if (check_buffers()) {
+                for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
+                    sync_buffer[i] = 0;
+                }
                 return 1;
             }
         }
@@ -168,92 +178,4 @@ int await_end_sync(const int analogue_threshold) {
             return 0;
         }
     }
-}
-
-
-// Функция ожидающая паттерн стартовой последовательности перед каждым сообщением
-// При обнаружении таковой в течение TIMEOUT_US мкс сразу же возвращает 1
-// При не обнаружении - 0
-int await_end_sync_(const int period_us, const int analogue_threshold) {
-    // Буфер для накопления распознанных битов синхронизации
-    int sync_buffer[SYNC_BUFFER_LENGTH] = {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1};
-    // Текущая длина буфера
-    int sync_buffer_len = 0;
-
-    // Прошедшее время (в микросекундах)
-    int elapsed = 0;
-    // Считываем начальное значение сигнала
-    int last_bit = receive_bit(analogue_threshold);
-    // Время, сколько микросекунд сигнал оставался неизменным
-    int stable_duration = 0;
-    long long int sum_all_durations = 0;
-    int count_all_durations = 0;
-
-    // Непрерывное считывание в течение таймаута
-    while (elapsed < TIMEOUT_US) {
-        rtc_wdt_feed();
-        ets_delay_us(1);
-        elapsed++;
-        const int current_bit = receive_bit(analogue_threshold);
-
-        if (current_bit == last_bit) {
-            // Сигнал не изменился – увеличиваем длительность текущего уровня
-            stable_duration++;
-        } else {
-            // При обнаружении изменения определяем, сколько битов передавалось:
-            // если длительность меньше порога (1.5 * period), считаем, что передан один бит,
-            // иначе – два одинаковых бита (для случая, когда 0 горит в 2 раза дольше).
-            const int threshold_duration = (int)(1.5 * period_us);
-            const int count = (stable_duration < threshold_duration) ? 1 : 2;
-
-            // Добавляем полученный бит count раз в буфер
-            for (int j = 0; j < count; j++) {
-                if (sync_buffer_len < SYNC_BUFFER_LENGTH) {
-                    sync_buffer[sync_buffer_len++] = last_bit;
-                } else {
-                    // Если буфер заполнен, сдвигаем его влево и вставляем новый бит в конец
-                    for (int i = 0; i < SYNC_BUFFER_LENGTH - 1; i++) {
-                        sync_buffer[i] = sync_buffer[i + 1];
-                    }
-                    sync_buffer[SYNC_BUFFER_LENGTH - 1] = last_bit;
-                }
-            }
-
-            char console_buffer[3 * SYNC_BUFFER_LENGTH + 2];
-            int offset = 0;
-            for (int i = 0; i < SYNC_BUFFER_LENGTH; i++) {
-                offset += snprintf(console_buffer + offset, sizeof(console_buffer) - offset, "%02d ", sync_buffer[i]);
-            }
-            console_buffer[3 * SYNC_BUFFER_LENGTH] = '\r';
-            console_buffer[3 * SYNC_BUFFER_LENGTH + 1] = '\n';
-
-            uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
-
-            // Если накоплено достаточно бит (например, MIN_SYNC_BITS),
-            // проверяем, соответствует ли текущий буфер соответствующему суффиксу синхронизирующей последовательности.
-            if (sync_buffer_len >= MIN_SYNC_BITS) {
-                // Если буфер не заполнен полностью, сравниваем с суффиксом полной последовательности
-                const int start_index = SYNC_BUFFER_LENGTH - sync_buffer_len;
-                int match = 1;
-                for (int i = 0; i < sync_buffer_len; i++) {
-                    if (sync_buffer[i] != pattern[start_index + i]) {
-                        match = 0;
-                        break;
-                    }
-                }
-                if (match) {
-                    // Если совпадает, считаем, что синхронизация завершена
-                    return 1;
-                }
-            }
-
-            // Обновляем значения для следующей итерации
-            last_bit = current_bit;
-            sum_all_durations += stable_duration;
-            count_all_durations++;
-            stable_duration = 0;
-        }
-    }
-    // Если время ожидания истекло, а последовательность не обнаружена – возвращаем 0
-    return 0;
 }

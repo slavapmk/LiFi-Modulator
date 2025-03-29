@@ -1,6 +1,7 @@
 #include "reciever.h"
 
 #include <esp_timer.h>
+#include <rtc_wdt.h>
 #include <stdio.h>
 #include <string.h>
 #include <driver/adc.h>
@@ -19,10 +20,11 @@ void process_manchester_receive(
     const int threshold, const double baseFrequency,
     const uart_port_t uart_port
 ) {
-    if (await_end_sync(threshold)) {
-        const char* console_buffer = "HANDLED!!!!!!!!\r\n\0";
-        uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
+    if (!await_end_sync(threshold)) {
+        return;
     }
+    const char* console_buffer = "HANDLED!!!!!!!!\r\n\0";
+    uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
 
     //     uint8_t buffer[BUFFER_SIZE];
     //     int buffer_index = 0;
@@ -154,4 +156,8 @@ void test_receive_raw(const uart_port_t uart_port) {
     buffer[4 * RAW_RECEIVE_ROWS + 1] = '\n';
 
     uart_write_bytes(uart_port, buffer, strlen(buffer));
+}
+
+void init_receiver() {
+    init_synchronizer();
 }
