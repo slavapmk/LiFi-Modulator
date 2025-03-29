@@ -19,10 +19,9 @@ void process_manchester_receive(
     const int threshold, const double baseFrequency,
     const uart_port_t uart_port
 ) {
-    if (await_end_sync(
-        (int)(500000.0 / baseFrequency), threshold
-    )) {
-        printf("Handled sync");
+    if (await_end_sync(threshold)) {
+        const char* console_buffer = "HANDLED!!!!!!!!\r\n\0";
+        uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
     }
 
     //     uint8_t buffer[BUFFER_SIZE];
@@ -121,19 +120,23 @@ void process_manchester_receive(
 }
 
 
-void test_receive_all(uart_port_t uart_port, const int threshold) {
-    char buffer[98]; // 96 символов + 1 для \n
-    int offset = 0;
+void test_receive_all(const uart_port_t uart_port, const int threshold) {
+    for (int a = 0; a < 10; ++a) {
+        char buffer[98]; // 96 символов + 1 для \n
+        int offset = 0;
 
-    for (int i = 0; i < 96; i++) {
-        const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
-        const int signal = adc_reading > threshold ? 1 : 0;
-        buffer[offset++] = signal ? '#' : ' ';
+        for (int i = 0; i < 96; i++) {
+            const int adc_reading = adc1_get_raw(ADC1_CHANNEL_4);
+            const int signal = adc_reading > threshold ? 1 : 0;
+            // buffer[offset++] = signal ? '#' : ' ';
+            buffer[offset++] = signal ? '1' : '0';
+            ets_delay_us(5);
+        }
+
+        buffer[offset++] = '\r'; // Добавляем перенос строки
+        buffer[offset++] = '\n'; // Добавляем перенос строки
+        uart_write_bytes(uart_port, buffer, offset);
     }
-
-    buffer[offset++] = '\r'; // Добавляем перенос строки
-    buffer[offset++] = '\n'; // Добавляем перенос строки
-    uart_write_bytes(uart_port, buffer, offset);
 }
 
 
