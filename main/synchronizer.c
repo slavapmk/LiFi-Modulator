@@ -19,7 +19,8 @@
 // Размер буфера сканирования для усреднения
 #define READ_BUFFER_LENGTH 10
 // Максимальный период для одного бита в микросекундах
-#define MAX_STABLE_DURATION 15000
+#define MAX_STABLE_DURATION 30000
+#define SYNC_DELAY          40000
 
 // Синхронизирующая последовательность: 1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0
 const int pattern[PATTERN_LENGTH] = {1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1};
@@ -124,7 +125,6 @@ void init_synchronizer() {
 // При обнаружении таковой в течение TIMEOUT_US мкс сразу же возвращает 1
 // При не обнаружении - 0
 int await_end_sync(const int analogue_threshold) {
-
     clear_read_buffer();
 
     // int time = 0;
@@ -151,21 +151,24 @@ int await_end_sync(const int analogue_threshold) {
                     shift_left_and_append_double(sync_buffer, SYNC_BUFFER_LENGTH, last_bit);
                 }
 
-                char console_buffer[32];
-                snprintf(console_buffer, sizeof(console_buffer), "Delay %6lld / %6d \r\n", diff, MAX_STABLE_DURATION);
-                uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
+                // char console_buffer[32];
+                // snprintf(console_buffer, sizeof(console_buffer), "Delay %6lld / %6d \r\n", diff, MAX_STABLE_DURATION);
+                // uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
             }
-            print_int_array(sync_buffer, SYNC_BUFFER_LENGTH);
-            print_double_array(read_buffer, READ_BUFFER_LENGTH);
+            // print_int_array(sync_buffer, SYNC_BUFFER_LENGTH);
+            // print_double_array(read_buffer, READ_BUFFER_LENGTH);
             stable_duration_start = esp_timer_get_time();
-            const char* aaa = "\r\n\0";
-            uart_write_bytes(UART_NUM_0, aaa, strlen(aaa));
+            // const char* aaa = "\r\n\0";
+            // uart_write_bytes(UART_NUM_0, aaa, strlen(aaa));
             last_bit = bin_of_buffer;
             clear_read_buffer();
             filled_count = 0;
             if (check_buffers()) {
                 for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
                     sync_buffer[i] = 0;
+                }
+                for (int i = 0; i < SYNC_DELAY / 1000; ++i) {
+                    ets_delay_us(1000);
                 }
                 return 1;
             }
