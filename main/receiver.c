@@ -1,24 +1,47 @@
 #include "reciever.h"
 
 #include <esp_timer.h>
+#include <math.h>
 #include <rtc.h>
 #include <rtc_wdt.h>
 #include <stdio.h>
 #include <string.h>
+#include <utils.h>
 #include <driver/adc.h>
 #include <driver/uart.h>
 #include <rom/ets_sys.h>
 
 #include "synchronizer.h"
 
-#define BUFFER_SIZE 1024
+static char console_buffer[1024];
 
-int receive_bit(const int threshold) {
-    return adc1_get_raw(ADC1_CHANNEL_4) < threshold;
+void init_receiver() {
+    init_synchronizer();
+    for (int i = 0; i < 1024; ++i) {
+        console_buffer[i] = 0;
+    }
 }
 
+// Используем отношение среднего значение буффера сканирования по отношению к порогу: выше единицы => выше порога
+char decode_manchester_pair(const double first, const double second) {
+    if (first < 1 && second >= 1) {
+        return 0;
+    }
+    if (first >= 1 && second < 1) {
+        return 1;
+    }
+    if (fabs(first - second) < 0.15) {
+        return 2;
+    }
+    return (second < first);
+}
+
+
+#define BUFFER_SIZE 1024
+
 static uint8_t received_byte_buffer[BUFFER_SIZE];
-static uint8_t test_buffer[BUFFER_SIZE];
+#define READ_BUFFER_MAX_SIZE 100
+static int read_buffer[READ_BUFFER_MAX_SIZE];
 
 void process_manchester_receive(
     const int threshold, const double baseFrequency,
@@ -28,102 +51,82 @@ void process_manchester_receive(
         received_byte_buffer[i] = 0;
     }
     if (!await_end_sync(threshold)) {
+        const char* console_buffer = "Sync timeout\r\n\0";
+        uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
         return;
     }
     // const char* console_buffer = "HANDLED!!!!!!!!\r\n\0";
     // uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
 
     int buffer_index = 0;
-    bool received_byte[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    int bit_count = 0;
-
-    // Расчёт целевого интервала для одного полупериода в микросекундах
-    int max_delay_period_us = (int)(1000000.0 / baseFrequency * 10);
-    int half_period_target_us = (int)(1000000.0 / baseFrequency / 2);
-    if (half_period_target_us < 1) half_period_target_us = 1;
-
-    uint64_t last_signal_time = esp_timer_get_time(); // Время последнего изменения сигнала
-
-    for (int i = 0; i < (half_period_target_us / 2) / 100; ++i) {
-        rtc_wdt_feed();
-        ets_delay_us(100);
+    double received_byte[16];
+    for (int i = 0; i < 16; ++i) {
+        received_byte[i] = -1;
     }
 
-    int test_off = 0;
+    // Расчёт целевого интервала для одного полупериода в микросекундах
+    const int max_delay_period_us = (int)(1000000.0 / baseFrequency * 10);
+    int half_period_target_us = (int)(1000000.0 / baseFrequency / 2);
+    if (half_period_target_us < 1) half_period_target_us = 1;
+    const double max_stable_period_us = half_period_target_us * 1.5;
+
+    int read_buffer_size = half_period_target_us;
+    if (read_buffer_size > READ_BUFFER_MAX_SIZE) {
+        read_buffer_size = READ_BUFFER_MAX_SIZE;
+    }
+    for (int i = 0; i < read_buffer_size; ++i) {
+        read_buffer[i] = -1;
+    }
+
+    double last_bit = -1;
+    int64_t stable_duration_start = esp_timer_get_time();
 
     while (1) {
         rtc_wdt_feed();
-        const uint64_t now = esp_timer_get_time();
+        const int64_t now = esp_timer_get_time();
+        shift_left_and_append_int(read_buffer, read_buffer_size, adc1_get_raw(ADC1_CHANNEL_4));
+        const double bin_of_buffer = avg_bin_of_buffer(read_buffer, read_buffer_size, threshold);
 
-        // Выход по таймауту, если сигнал не изменялся
-        if (now - last_signal_time > max_delay_period_us) {
+        if (bin_of_buffer != -1 && (last_bit >= 0) != (bin_of_buffer >= 0)) {
+            if (last_bit != -1) {
+                const double diff = now - stable_duration_start;
+
+                for (int i = 0; i < (diff > max_stable_period_us ? 2 : 1); ++i) {
+                    shift_left_and_append_double(received_byte, 16, last_bit >= 1 ? 1 : 0);
+                }
+            }
+            stable_duration_start = now;
+            last_bit = bin_of_buffer;
+
+            if (received_byte[0] != -1) {
+                unsigned char byte_value = 0;
+                bool skip_byte = 0;
+                for (int i = 0; i < 8; i++) {
+                    if (skip_byte) {
+                        continue;
+                    }
+                    const char bit = decode_manchester_pair(
+                        received_byte[2 * i], received_byte[2 * i + 1]
+                    );
+                    if (bit == 2) {
+                        skip_byte = true;
+                        continue;
+                    }
+                    byte_value |= (bit << (7 - i));
+                    received_byte[2 * i] = 0;
+                    received_byte[2 * i + 1] = 0;
+                }
+                received_byte_buffer[buffer_index++] = byte_value;
+
+                for (int i = 0; i < read_buffer_size; ++i) {
+                    read_buffer[i] = -1;
+                }
+            }
+        }
+
+        if (now - stable_duration_start > max_delay_period_us) {
             break;
         }
-
-        const int first_signal = (adc1_get_raw(ADC1_CHANNEL_4) >= threshold) ? 1 : 0;
-        for (int i = 0; i < (half_period_target_us / 100); ++i) {
-            rtc_wdt_feed();
-            ets_delay_us(100);
-        }
-
-        const int second_signal = (adc1_get_raw(ADC1_CHANNEL_4) >= threshold) ? 1 : 0;
-        for (int i = 0; i < (half_period_target_us / 100); ++i) {
-            rtc_wdt_feed();
-            ets_delay_us(100);
-        }
-
-        test_buffer[test_off++] = first_signal ? '1' : '0';
-        test_buffer[test_off++] = second_signal ? '1' : '0';
-        test_buffer[test_off++] = ' ';
-
-        int bit = -1;
-        if (first_signal == 0 && second_signal == 1) {
-            bit = 1;
-        } else if (first_signal == 1 && second_signal == 0) {
-            bit = 0;
-        } else if (first_signal == 1 && second_signal == 1) {
-            bit = 2;
-        }
-
-        test_buffer[test_off++] = '(';
-        if (bit == -1) {
-            test_buffer[test_off++] = '-';
-            test_buffer[test_off++] = '1';
-        } else if (bit == 1) {
-            test_buffer[test_off++] = '1';
-        } else if (bit == 0) {
-            test_buffer[test_off++] = '0';
-        } else if (bit == 2) {
-            test_buffer[test_off++] = '2';
-        }
-        test_buffer[test_off++] = ')';
-
-        // char aaa[96];
-        // aaa[snprintf(aaa, sizeof(aaa), "Bit %d%d \r\n", first_signal, second_signal)] = '\0';
-        // uart_write_bytes(UART_NUM_0, aaa, strlen(aaa));
-
-        if (bit == -1) {
-            bit = 0;
-        } else if (bit == 2) {
-            bit = 1;
-        } else {
-            last_signal_time = now;
-        }
-
-        bit_count++;
-
-        received_byte[bit_count] = bit;
-        unsigned char byte_value = 0;
-        if (bit_count >= 8) {
-            for (int i = 0; i < 8; i++) {
-                byte_value |= (received_byte[i] << (7 - i));
-                received_byte[i] = 0;
-            }
-            bit_count = 0;
-            test_buffer[test_off++] = '\r';
-            test_buffer[test_off++] = '\n';
-        }
-        received_byte_buffer[buffer_index++] = byte_value;
     }
 
     received_byte_buffer[buffer_index++] = '\r';
@@ -134,10 +137,6 @@ void process_manchester_receive(
     if (buffer_index > 0) {
         uart_write_bytes(uart_port, received_byte_buffer, buffer_index);
     }
-    test_buffer[test_off++] = '\r';
-    test_buffer[test_off++] = '\n';
-    test_buffer[test_off++] = '\0';
-    uart_write_bytes(uart_port, test_buffer, 1024);
 }
 
 
@@ -159,8 +158,6 @@ void test_receive_bin(const uart_port_t uart_port, const int threshold) {
         uart_write_bytes(uart_port, buffer, offset);
     }
 }
-
-static char console_buffer[1024];
 
 void test_receive_all(const uart_port_t uart_port, const int threshold) {
     for (int a = 0; a < 10; ++a) {
@@ -186,7 +183,7 @@ void test_receive_all(const uart_port_t uart_port, const int threshold) {
 #define RAW_RECEIVE_ROWS 16
 
 void test_receive_raw(const uart_port_t uart_port) {
-    char buffer[4 * RAW_RECEIVE_ROWS + 2];
+    char buffer[4 * RAW_RECEIVE_ROWS + 3];
     int offset = 0;
 
     for (int i = 0; i < RAW_RECEIVE_ROWS; i++) {
@@ -195,13 +192,7 @@ void test_receive_raw(const uart_port_t uart_port) {
     }
     buffer[4 * RAW_RECEIVE_ROWS] = '\r';
     buffer[4 * RAW_RECEIVE_ROWS + 1] = '\n';
+    buffer[4 * RAW_RECEIVE_ROWS + 2] = '\0';
 
     uart_write_bytes(uart_port, buffer, strlen(buffer));
-}
-
-void init_receiver() {
-    init_synchronizer();
-    for (int i = 0; i < 1024; ++i) {
-        console_buffer[i] = 0;
-    }
 }

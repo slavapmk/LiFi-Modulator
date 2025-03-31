@@ -1,9 +1,5 @@
-//
-// Created by Slava on 25.03.2025.
-//
-
-#ifndef RECIEVER_H
-#define RECIEVER_H
+#ifndef RECEIVER_H
+#define RECEIVER_H
 #include <hal/uart_types.h>
 
 // Ожидание и чтение кодированных данных
