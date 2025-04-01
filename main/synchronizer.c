@@ -3,7 +3,6 @@
 #include <esp_timer.h>
 #include <rtc_wdt.h>
 #include <time.h>
-#include <utils.h>
 #include <driver/adc.h>
 #include <driver/uart.h>
 #include <hal/wdt_hal.h>
@@ -23,15 +22,75 @@
 #define MAX_STABLE_DURATION 30000
 #define SYNC_DELAY          40000
 
-static double sync_buffer[SYNC_BUFFER_LENGTH];
-void init_synchronizer() {
-    for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
-        sync_buffer[i] = 0;
-    }
-}
-
+// Синхронизирующая последовательность: 1,0,1,0,1,0,1,0,0,1,0,1,0,1,0,0
 const int pattern[PATTERN_LENGTH] = {1, 0, 1, 0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 1};
 
+int read_avg(const int length_us, const int analogue_threshold) {
+    long long int sum = 0;
+    int count = 0;
+    for (int i = 0; i < length_us; ++i) {
+        const int read = adc1_get_raw(ADC1_CHANNEL_4);
+        sum += read;
+        ++count;
+        ets_delay_us(1);
+    }
+    return (sum / count) > analogue_threshold;
+}
+
+void shift_left_and_append_int(int arr[], const int size, const int new_value) {
+    for (int i = 0; i < size - 1; ++i) {
+        arr[i] = arr[i + 1]; // Сдвигаем влево
+    }
+    arr[size - 1] = new_value; // Добавляем новое значение в конец
+}
+
+void shift_left_and_append_double(double arr[], const int size, const double new_value) {
+    for (int i = 0; i < size - 1; ++i) {
+        arr[i] = arr[i + 1]; // Сдвигаем влево
+    }
+    arr[size - 1] = new_value; // Добавляем новое значение в конец
+}
+
+// Функция определения бита по среднему значению измерений (для стабильности на низкой частоте синхронизации)
+double avg_bin_of_buffer(const int arr[], const int size, const int analogue_threshold) {
+    long long int sum = 0;
+    int count = 0;
+    for (int i = 0; i < size; ++i) {
+        if (arr[i] != -1) {
+            sum += arr[i];
+            ++count;
+        }
+    }
+    return sum * 1.0 / count / analogue_threshold;
+}
+
+static char console_buffer[1024]; // Глобальный буфер (можно изменить размер по необходимости)
+
+void print_int_array(double arr[], const int size) {
+    int offset = 0;
+    for (int i = 0; i < size; i++) {
+        offset += snprintf(console_buffer + offset, sizeof(console_buffer) - offset, "%.02f ", arr[i]);
+    }
+    console_buffer[offset] = '\r'; // Перевод строки с помощью \r\n
+    console_buffer[offset + 1] = '\n';
+    console_buffer[offset + 2] = '\0'; // Завершающий нулевой символ
+
+    uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
+}
+
+void print_double_array(int arr[], const int size) {
+    int offset = 0;
+    for (int i = 0; i < size; i++) {
+        offset += snprintf(console_buffer + offset, sizeof(console_buffer) - offset, "%4d ", arr[i]);
+    }
+    console_buffer[offset] = '\r'; // Перевод строки с помощью \r\n
+    console_buffer[offset + 1] = '\n';
+    console_buffer[offset + 2] = '\0'; // Завершающий нулевой символ
+
+    uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
+}
+
+static double sync_buffer[SYNC_BUFFER_LENGTH];
 static int read_buffer[READ_BUFFER_LENGTH];
 
 void clear_read_buffer(void) {
@@ -54,6 +113,12 @@ int check_buffers() {
 
     // printf("All correct\r\n");
     return true;
+}
+
+void init_synchronizer() {
+    for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
+        sync_buffer[i] = 0;
+    }
 }
 
 // Функция ожидающая паттерн стартовой последовательности перед каждым сообщением
@@ -102,9 +167,9 @@ int await_end_sync(const int analogue_threshold) {
                 for (int i = 0; i < SYNC_BUFFER_LENGTH; ++i) {
                     sync_buffer[i] = 0;
                 }
-                for (int i = 0; i < SYNC_DELAY / 1000; ++i) {
-                    ets_delay_us(1000);
-                }
+                // for (int i = 0; i < SYNC_DELAY / 1000; ++i) {
+                //     ets_delay_us(1000);
+                // }
                 return 1;
             }
         }

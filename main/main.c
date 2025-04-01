@@ -1,7 +1,7 @@
 #include <esp_log.h>
 #include <esp_log_level.h>
 #include <esp_task_wdt.h>
-#include <reciever.h>
+#include <receiver.h>
 #include <rtc_wdt.h>
 #include <sender.h>
 
@@ -280,7 +280,7 @@ void app_main(void) {
     esp_log_level_set("*", ESP_LOG_NONE);
     uart_param_config(UART_PORT_NUM, &uart_config);
     uart_driver_install(UART_PORT_NUM, BUF_SIZE * 2, 0, 0, NULL, 0);
-    printf("\r\n");
+    uart_write_bytes(UART_PORT_NUM, "\n\0", 2);
 
     // Настройка ширины ADC (12 бит)
     adc1_config_width(ADC_WIDTH_BIT_12);

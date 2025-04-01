@@ -1,24 +1,26 @@
 #include "utils.h"
 
+#include <string.h>
+
 void shift_left_and_append_int(int arr[], const int size, const int new_value) {
-    for (int i = 0; i < size - 1; ++i) {
-        arr[i] = arr[i + 1]; // Сдвигаем влево
-    }
-    arr[size - 1] = new_value; // Добавляем новое значение в конец
+    if (!arr) return;
+    if (size <= 0) return;
+    memmove(arr, arr + 1, (size - 1) * sizeof(int));
+    arr[size - 1] = new_value;
 }
 
 void shift_left_and_append_double(double arr[], const int size, const double new_value) {
-    for (int i = 0; i < size - 1; ++i) {
-        arr[i] = arr[i + 1]; // Сдвигаем влево
-    }
-    arr[size - 1] = new_value; // Добавляем новое значение в конец
+    if (!arr) return;
+    if (size <= 0) return;
+    memmove(arr, arr + 1, (size - 1) * sizeof(int));
+    arr[size - 1] = new_value;
 }
 
 void shift_left_and_append_char(char arr[], const int size, const char new_value) {
-    for (int i = 0; i < size - 1; ++i) {
-        arr[i] = arr[i + 1]; // Сдвигаем влево
-    }
-    arr[size - 1] = new_value; // Добавляем новое значение в конец
+    if (!arr) return;
+    if (size <= 0) return;
+    memmove(arr, arr + 1, (size - 1) * sizeof(int));
+    arr[size - 1] = new_value;
 }
 
 double avg_bin_of_buffer(const int arr[], const int size, const int analogue_threshold) {
