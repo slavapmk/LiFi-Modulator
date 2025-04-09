@@ -4,7 +4,7 @@
 
 // Ожидание и чтение кодированных данных
 void process_manchester_receive(
-    int threshold, double baseFrequency,
+    int threshold, int baseFrequency,
     uart_port_t uart_port
 );
 
