@@ -40,6 +40,7 @@ volatile bool binRead = 0;
 volatile bool readMode = 0;
 volatile bool blinkMode = 0;
 volatile bool duplexMode = 0;
+volatile bool infTest = 0;
 
 void found_threshold(void) {
     printf("Scanning min and max value\n");
@@ -131,7 +132,8 @@ void process_command(const char* cmd) {
                 normalRead = 0;
                 readMode = 0;
                 blinkMode = 1;
-        duplexMode = 0;
+                infTest = 0;
+                duplexMode = 0;
                 printf("Blinking with %d Hz\n", blink_frequency);
             } else {
                 printf("Incorrect frequency: %s\n", arg);
@@ -147,6 +149,7 @@ void process_command(const char* cmd) {
         readMode = 1;
         blinkMode = 0;
         duplexMode = 0;
+        infTest = 0;
     } else if (strncmp(cmd, "#RRAW", 5) == 0) {
         printf("Raw mode\n");
         rawRead = 1;
@@ -155,6 +158,7 @@ void process_command(const char* cmd) {
         readMode = 1;
         blinkMode = 0;
         duplexMode = 0;
+        infTest = 0;
     } else if (strncmp(cmd, "#RBIN", 5) == 0) {
         printf("Bin mode\n");
         rawRead = 0;
@@ -163,6 +167,7 @@ void process_command(const char* cmd) {
         readMode = 1;
         blinkMode = 0;
         duplexMode = 0;
+        infTest = 0;
     } else if (strncmp(cmd, "#SEND", 5) == 0) {
         printf("Send mode\n");
         rawRead = 0;
@@ -171,6 +176,7 @@ void process_command(const char* cmd) {
         readMode = 0;
         blinkMode = 0;
         duplexMode = 0;
+        infTest = 0;
     } else if (strncmp(cmd, "#DUPL", 5) == 0) {
         printf("Half-Duplex mode\n");
         rawRead = 0;
@@ -179,6 +185,16 @@ void process_command(const char* cmd) {
         readMode = 0;
         blinkMode = 0;
         duplexMode = 1;
+        infTest = 0;
+    } else if (strncmp(cmd, "#IATHR", 6) == 0) {
+        printf("Infinite testing scanning\n");
+        rawRead = 0;
+        binRead = 0;
+        normalRead = 0;
+        readMode = 0;
+        blinkMode = 0;
+        duplexMode = 0;
+        infTest = 1;
     } else if (strncmp(cmd, "#ATHR", 5) == 0) {
         found_threshold();
     } else {
@@ -268,6 +284,9 @@ void app_main(void) {
                 test_receive_all(UART_PORT_NUM, threshold);
                 ets_delay_us(10);
             }
+        }
+        if (infTest) {
+            found_threshold();
         }
 
         // Сбрасываем ("кормим") Watchdog таймер, чтобы не было принудительного завершения программы

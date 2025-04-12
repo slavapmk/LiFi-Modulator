@@ -30,19 +30,16 @@ char decode_manchester_pair(const double first, const double second) {
     if (first >= 1 && second < 1) {
         return 0;
     }
-    // if (fabs(first - second) < 0.02) {
-    //     return 2;
-    // }
+    if (fabs(first - second) < 0.02) {
+        return 2;
+    }
     return second > first ? 1 : 0;
 }
 
+#define CYCLE_BUFFER_SIZE 1
 
-#define BUFFER_SIZE 1024
-#define MAX_PACKER_SIZE 128
-#define AVG_ATT 50
-
-static uint8_t received_bytes_buffer[BUFFER_SIZE];
-static double received_half_bits_buffer[BUFFER_SIZE * 8 * 2];
+#define MAX_BYTES 1024
+#define MAX_HALF_BITS 16384
 
 void print_double_arraqy(double arr[], const int size) {
     int offset = 0;
@@ -56,70 +53,92 @@ void print_double_arraqy(double arr[], const int size) {
     uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
 }
 
+int read_avg_samples(const int samples, const int delay_us) {
+    int sum = 0;
+    for (int i = 0; i < samples; ++i) {
+        sum += adc1_get_raw(ADC1_CHANNEL_4);
+        if (delay_us > 0) {
+            ets_delay_us(delay_us);
+        }
+    }
+    return sum / samples;
+}
+
+static int read_buffer[CYCLE_BUFFER_SIZE] = {0};
+static double half_bits_buffer[MAX_HALF_BITS] = {0};
+static unsigned char bytes_buffer[MAX_BYTES] = {0};
+static double delays[256] = {0};
 void process_manchester_receive(
     const int threshold, const int baseFrequency,
     const uart_port_t uart_port
 ) {
-    if (baseFrequency <= 0) return;
-    memset(received_bytes_buffer, 0, sizeof(received_bytes_buffer));
-    memset(received_half_bits_buffer, 0, sizeof(received_half_bits_buffer));
+    memset(read_buffer, 0, sizeof(read_buffer));
+    memset(half_bits_buffer, 0, sizeof(half_bits_buffer));
+    memset(bytes_buffer, 0, sizeof(bytes_buffer));
+    memset(delays, 0, sizeof(delays));
     if (!await_end_sync(threshold)) {
         return;
     }
+    int read_index = 0;
 
-    int packet_byte_buffer_index = 0;
+    // Буфер для хранения принятых битов
+    int half_bits = 0;
 
-    int received_byte_bit_index = 0;
+    int last_raw = -1;
+    double last_value = -1;
+    int64_t stable_start = esp_timer_get_time();
 
-    // Расчёт целевого интервала для одного полупериода в микросекундах
     const double max_delay_period_us = 5000000.0 / baseFrequency;
-    double half_period_target_us = 500000.0 / baseFrequency;
-    if (half_period_target_us < 1) half_period_target_us = 1;
+    const double half_period_target_us = 500000.0 / baseFrequency;
     const double max_stable_period_us_d = 750000.0 / baseFrequency;
+    int delay = 0;
 
-    double last_bit = -1;
-    int64_t stable_duration_start = esp_timer_get_time();
-
-    // char buf[32];
-    // snprintf(buf, sizeof(buf), "Max %d \r\n", max_delay_period_us);
-    // uart_write_bytes(UART_NUM_0, buf, strlen(buf));
-
-    while (1) {
+    while (true) {
         rtc_wdt_feed();
         const int64_t now = esp_timer_get_time();
-        shift_left_and_append_int(read_buffer, read_buffer_size, adc1_get_raw(ADC1_CHANNEL_4));
-        const double bin_of_buffer = avg_bin_of_buffer(read_buffer, read_buffer_size, threshold);
+        const double diff = (now - stable_start);
 
-        if (bin_of_buffer != -1 && (last_bit >= 1) != (bin_of_buffer >= 1)) {
-            if (last_bit != -1) {
-                const double diff = (now - stable_duration_start);
+        // const int new_value = read_avg_samples(10, 1);
+        const int new_value = read_avg_samples(10, 0);
+        read_buffer[read_index] = new_value;
+        read_index = (read_index + 1) % CYCLE_BUFFER_SIZE;
 
+        const int median = calc_median(read_buffer, CYCLE_BUFFER_SIZE);
+        // const int median = 4;
+
+        const double binary = median * 1.0 / threshold;
+        if (
+            abs(median - last_raw) > 300 &&
+            (binary >= 1) != (last_value >= 1)
+        ) {
+            if (last_value != -1) {
                 for (int i = 0; i < (diff > max_stable_period_us_d ? 2 : 1); ++i) {
-                    received_half_bits_buffer[received_byte_bit_index++] = last_bit;
+                    half_bits_buffer[half_bits++] = last_value;
                 }
+                delays[delay++] = diff;
             }
-            stable_duration_start = now;
-            last_bit = bin_of_buffer;
+
+            last_value = binary;
+            last_raw = median;
+            stable_start = now;
         }
 
-        if (
-            (now - stable_duration_start) > max_delay_period_us ||
-            received_byte_bit_index / 16 >= MAX_PACKER_SIZE
-        ) {
+        if (diff >= max_delay_period_us) {
             break;
         }
+        // ets_delay_us(1);
     }
 
-    for (int byte_bits_index = 0; byte_bits_index <= received_byte_bit_index / 16; ++byte_bits_index) {
+    int packet_byte_buffer_index = 0;
+    for (int byte_bits_index = 0; byte_bits_index <= half_bits / 16; ++byte_bits_index) {
         unsigned char byte_value = 0;
         bool skip_byte = 0;
         for (int i = 0; i < 8; ++i) {
             if (skip_byte) {
                 continue;
             }
-            const double first = received_half_bits_buffer[byte_bits_index * 16 + i * 2];
-            const double second = received_half_bits_buffer[byte_bits_index * 16 + i * 2 + 1];
-            // printf("%f %f\n", first, second);
+            const double first = half_bits_buffer[byte_bits_index * 16 + i * 2];
+            const double second = half_bits_buffer[byte_bits_index * 16 + i * 2 + 1];
             const char bit = decode_manchester_pair(
                 first,
                 second
@@ -131,26 +150,19 @@ void process_manchester_receive(
             }
             byte_value |= (bit << (7 - i));
         }
-        received_bytes_buffer[packet_byte_buffer_index++] = byte_value;
+        bytes_buffer[packet_byte_buffer_index++] = byte_value;
     }
 
-    // print_double_arraqy(bits_buffer, received_byte_bit_index);
-    print_double_arraqy(received_half_bits_buffer, received_byte_bit_index);
-
-    // Отправка накопленного буфера по завершению приёма
     if (packet_byte_buffer_index > 0) {
-        received_bytes_buffer[packet_byte_buffer_index++] = '\r';
-        received_bytes_buffer[packet_byte_buffer_index++] = '\n';
-        received_bytes_buffer[packet_byte_buffer_index++] = '\0';
-        uart_write_bytes(uart_port, received_bytes_buffer, packet_byte_buffer_index);
+        bytes_buffer[packet_byte_buffer_index++] = '\r';
+        bytes_buffer[packet_byte_buffer_index++] = '\n';
+        bytes_buffer[packet_byte_buffer_index++] = '\0';
+        uart_write_bytes(uart_port, bytes_buffer, packet_byte_buffer_index);
     }
 
-    printf(
-        "max_delay_period_us %f\nhalf_period_target_us %f\nmax_stable_period_us_d %f\n\n",
-        max_delay_period_us,
-        half_period_target_us,
-        max_stable_period_us_d
-    );
+    print_double_arraqy(half_bits_buffer, half_bits);
+    delays[delay++] = max_stable_period_us_d;
+    print_double_arraqy(delays, delay);
 }
 
 
