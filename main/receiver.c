@@ -53,6 +53,18 @@ void print_double_arraqy(double arr[], const int size) {
     uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
 }
 
+void print_int_arraqy(int64_t arr[], const int size) {
+    int offset = 0;
+    for (int i = 0; i < size; i++) {
+        offset += snprintf(console_buffer + offset, sizeof(console_buffer) - offset, "%lld ", arr[i]);
+    }
+    console_buffer[offset] = '\r'; // Перевод строки с помощью \r\n
+    console_buffer[offset + 1] = '\n';
+    console_buffer[offset + 2] = '\0'; // Завершающий нулевой символ
+
+    uart_write_bytes(UART_NUM_0, console_buffer, strlen(console_buffer));
+}
+
 int read_avg_samples(const int samples, const int delay_us) {
     int sum = 0;
     for (int i = 0; i < samples; ++i) {
@@ -67,7 +79,7 @@ int read_avg_samples(const int samples, const int delay_us) {
 static int read_buffer[CYCLE_BUFFER_SIZE] = {0};
 static double half_bits_buffer[MAX_HALF_BITS] = {0};
 static unsigned char bytes_buffer[MAX_BYTES] = {0};
-static double delays[256] = {0};
+static int64_t time_diffs[256] = {0};
 void process_manchester_receive(
     const int threshold, const int baseFrequency,
     const uart_port_t uart_port
@@ -75,7 +87,7 @@ void process_manchester_receive(
     memset(read_buffer, 0, sizeof(read_buffer));
     memset(half_bits_buffer, 0, sizeof(half_bits_buffer));
     memset(bytes_buffer, 0, sizeof(bytes_buffer));
-    memset(delays, 0, sizeof(delays));
+    memset(time_diffs, 0, sizeof(time_diffs));
     if (!await_end_sync(threshold)) {
         return;
     }
@@ -88,23 +100,23 @@ void process_manchester_receive(
     double last_value = -1;
     int64_t stable_start = esp_timer_get_time();
 
-    const double max_delay_period_us = 5000000.0 / baseFrequency;
-    const double half_period_target_us = 500000.0 / baseFrequency;
-    const double max_stable_period_us_d = 750000.0 / baseFrequency;
-    int delay = 0;
+    const int64_t max_delay_period_us = 5000000 / (baseFrequency);
+    const int64_t half_period_target_us = 500000 / baseFrequency;
+    const int64_t max_stable_period_us_d = 750000 / (baseFrequency);
+    int diff_index = 0;
 
     while (true) {
-        rtc_wdt_feed();
         const int64_t now = esp_timer_get_time();
-        const double diff = (now - stable_start);
+        rtc_wdt_feed();
 
-        // const int new_value = read_avg_samples(10, 1);
-        const int new_value = read_avg_samples(10, 0);
-        read_buffer[read_index] = new_value;
-        read_index = (read_index + 1) % CYCLE_BUFFER_SIZE;
-
-        const int median = calc_median(read_buffer, CYCLE_BUFFER_SIZE);
-        // const int median = 4;
+        // // const int new_value = read_avg_samples(10, 1);
+        // const int new_value = read_avg_samples(10, 0);
+        // read_buffer[read_index] = new_value;
+        // read_index = (read_index + 1) % CYCLE_BUFFER_SIZE;
+        //
+        // const int median = calc_median(read_buffer, CYCLE_BUFFER_SIZE);
+        const int median = adc1_get_raw(ADC1_CHANNEL_4);
+        const int64_t diff = (now - stable_start);
 
         const double binary = median * 1.0 / threshold;
         if (
@@ -115,7 +127,7 @@ void process_manchester_receive(
                 for (int i = 0; i < (diff > max_stable_period_us_d ? 2 : 1); ++i) {
                     half_bits_buffer[half_bits++] = last_value;
                 }
-                delays[delay++] = diff;
+                time_diffs[diff_index++] = diff;
             }
 
             last_value = binary;
@@ -126,7 +138,7 @@ void process_manchester_receive(
         if (diff >= max_delay_period_us) {
             break;
         }
-        // ets_delay_us(1);
+        ets_delay_us(10);
     }
 
     int packet_byte_buffer_index = 0;
@@ -161,8 +173,8 @@ void process_manchester_receive(
     }
 
     print_double_arraqy(half_bits_buffer, half_bits);
-    delays[delay++] = max_stable_period_us_d;
-    print_double_arraqy(delays, delay);
+    time_diffs[diff_index++] = max_stable_period_us_d;
+    print_int_arraqy(time_diffs, diff_index);
 }
 
 

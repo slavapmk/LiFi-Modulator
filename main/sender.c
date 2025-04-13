@@ -2,6 +2,7 @@
 
 #include <rtc_wdt.h>
 #include <driver/gpio.h>
+#include <driver/uart.h>
 #include <rom/ets_sys.h>
 
 // Esp32 TX2 (GPIO 17)
@@ -59,4 +60,5 @@ void process_binary_data(const uint8_t* data, const int len, const double baseFr
     }
 
     gpio_set_level(LED_GPIO, 0);
+    uart_write_bytes(UART_NUM_0, "Data sent\n\0", 11);
 }
